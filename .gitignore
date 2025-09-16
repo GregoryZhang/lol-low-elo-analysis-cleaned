@@ -1,0 +1,24 @@
+# --- Virtual environments ---
+.venv/
+
+# --- Python cache files ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- LaTeX build files ---
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+
+# --- Optional: analysis outputs ---
+tables/
+figures/
