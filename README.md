@@ -1,0 +1,16 @@
+# Low-Elo League of Legends: Yone Match Outcome Prediction
+
+This project analyzes 100 of my own ranked solo-queue Yone games played in low-rank (Iron-Gold range). 
+The analysis begins with per-minute normalization, then univariate screening consisting of Welch t-tests with Cohen’s d, point-biserial correlations, and univariate logistic regression all with FDR correction, then multivariate logistic regression with VIF trimming, and finally model validation using ROC/AUC with Youden’s J.
+
+To set up the environment, create and activate a virtual environment and install the requirements in the command prompt:
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+The dataset `yone_soloq_100games.csv` is already included in the `data/` folder. 
+
+To run the analysis, execute: python src/analysis.py in the command prompt
+
+The final paper with findings is a PDF in the `paper/` folder.
