@@ -9,10 +9,10 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
-The dataset `yone_soloq_100games.csv` is already included in the `data/` folder. 
+The dataset `yone_soloq_100games.csv` is already included in the `data` folder. 
 
 To run the analysis, execute: 
 ```bash
 python src/analysis.py 
 ```
-The final paper with findings is a PDF in the `paper/` folder.
+The final paper with findings is a PDF in the `paper` folder.
