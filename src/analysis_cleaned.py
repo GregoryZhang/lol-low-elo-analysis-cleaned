@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import pingouin as pg
 
 from scipy.stats import ttest_ind, pointbiserialr
 import statsmodels.api as sm
@@ -20,6 +21,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import confusion_matrix
+
 
 #config (to change per person)
 CSV = Path("data/yone_soloq_100games.csv")#enter path here
@@ -31,20 +34,6 @@ FIGS.mkdir(exist_ok=True)
 
 REMAKE_MINUTES = 7.0   #if a game is under 7 mins, i consider that within the remake window 
 RANDOM_STATE = 42    #for reproducibility 
-
-
-#helper function
-#cohen's d doesn't exist in mainstreet libraries so i'll manually code it
-def cohens_d(x: pd.Series, y: pd.Series) -> float:
-    x = x.dropna()
-    y = y.dropna()
-    if len(x) < 2 or len(y) <2:
-        return np.nan
-    sx = x.std(ddof=1)
-    sy = y.std(ddof=1)
-    pooled_s = ((len(x)-1)*sx**2 + (len(y)-1)*sy**2) / (len(x)+len(y)-2)
-    den = np.sqrt(pooled_s) if pooled_s > 0 else np.nan
-    return (x.mean() - y.mean())/den if np.isfinite(den) else np.nan
 
 
 #now import our csv and clean the data up
@@ -77,7 +66,8 @@ for c in pm_cols:
     l = df.loc[df["Win"]==0, c]
     t_stat, p_raw = ttest_ind(w, l, equal_var=False, nan_policy="omit")
     rows.append({"metric": c, "mean_win": w.mean(), "mean_loss": l.mean(),
-                 "t_stat": t_stat, "p_raw": p_raw, "cohens_d": cohens_d(w, l)})
+                 "t_stat": t_stat, "p_raw": p_raw, 
+                 "hedges_g": float(pg.compute_effsize(w.dropna().values, l.dropna().values, eftype="hedges", paired=False))})
 ttest = pd.DataFrame(rows).sort_values("p_raw")
 rej, p_fdr, _, _ = multipletests(ttest["p_raw"], alpha = 0.05, method = "fdr_bh")
 ttest["p_fdr"], ttest["sig_fdr"] = p_fdr, rej
@@ -139,7 +129,7 @@ out["odds_ratio"], out["or_ci_low"], out["or_ci_high"] = np.exp(out["coef"]), np
 out.drop("const").sort_values("p_value").to_csv(RESULTS / "multivariate_logit.csv")
 
 
-#now that we have multicollinearity to show overlapping variables, here are the cols we wish to keep 
+#now that we have multicollinearity to show overlapping variables, here are the cols we wish to keep from the vif file before
 KEEP_COLS = [
     "Kills_pm", "Deaths_pm", "Assists_pm", "CS_pm",
     "DamageTaken_pm", "VisionScore_pm", "WardsKilled_pm",
@@ -150,11 +140,7 @@ Z = df_z.loc[dfm.index, KEEP_COLS]
 X= sm.add_constant(Z)
 y = dfm["Win"].astype(int)
 
-vif = pd.DataFrame({
-    "feature": Z.columns,
-    "VIF": [variance_inflation_factor(Z.values, i) for i in range(Z.shape[1])]
-})
-vif.to_csv(RESULTS / "vif_trimmed.csv", index=False)
+
 
 model = sm.Logit(y, X).fit(disp=0)
 conf = model.conf_int(); conf.columns = ["ci_low","ci_high"]
@@ -165,9 +151,14 @@ out.drop("const").sort_values("p_value").to_csv(RESULTS / "multivariate_logit_tr
 
 
 
-#now time to find auc, roc, and youdens curve to confirm prediction performance of model
+#now time to find auc, roc, and youdens j to confirm prediction performance of model
+#first split between training and testing (decided on a 80/20 split once implemented validation so training data isnt to small)
 X, y = dfm[KEEP_COLS], dfm["Win"].astype(int)
-Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, stratify=y, random_state=RANDOM_STATE)
+all_Xtr, Xte, all_ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE)
+
+
+#within the training, we want to split between actually training and model validation (decided on to be a 60/20 split within the 80% "training")
+Xtr, Xval, ytr, yval = train_test_split(all_Xtr, all_ytr, test_size = (2/8), stratify = all_ytr, random_state = RANDOM_STATE)
 
 pipe = Pipeline([
     ("scaler", StandardScaler()),
@@ -175,36 +166,57 @@ pipe = Pipeline([
 ])
 pipe.fit(Xtr, ytr)
 
-y_prob = pipe.predict_proba(Xte)[:,1]
-auc = roc_auc_score(yte, y_prob)
-fpr, tpr, thr = roc_curve(yte, y_prob)
-print(f"Test ROC-AUC: {auc:.3f}")
+#we want to get our Youden's J from validation set
+#Since our youdens j is super conservative and has a low sensitivity rate, i'm explicitly adding a cuttoff for sensitivity to be 
+#greater than 0.6 so our model is reasonable
+yval_prob = pipe.predict_proba(Xval)[:,1]
+auc_val = roc_auc_score(yval, yval_prob)
+fpr_val, tpr_val, thres_val = roc_curve(yval, yval_prob)
+fpr_val, tpr_val, thres_val = fpr_val[1:], tpr_val[1:], thres_val[1:] #want to avoid the inf threshold
+youden = tpr_val - fpr_val
+cutoff = (tpr_val >= 0.7)
+if np.any(cutoff):  
+    best_local = np.argmax(youden[cutoff])
+    best_val_index = np.flatnonzero(cutoff)[best_local]
+else:
+    best_val_index = int(np.argmax(youden))
+best_thres = float(thres_val[best_val_index])
+print(f"Validation ROC-AUC: {auc_val:.3f}")
+print(f"Best cutoff = {best_thres:.3f}, J = {youden[best_val_index]:.3f}")
 
-youden = tpr - fpr
-best_idx = int(np.argmax(youden))
-best_thr = float(thr[best_idx])
-print(f"Best cutoff = {best_thr:.3f}, J = {youden[best_idx]:.3f}")
+#now we can see the values on the test given the validation results to test performance
+#note that given the test roc may not provide the same threshold at all, we will use the confusion matrix to ensure that the thresholds align
+yte_prob = pipe.predict_proba(Xte)[:,1]
+auc_test = roc_auc_score(yte, yte_prob)
+yte_pred = (yte_prob >= best_thres).astype(int)
+tn, fp, fn, tp = confusion_matrix(yte, yte_pred).ravel()
+sens = tp/(tp+fn) if (tp+fn) else 0.0
+spec = tn/(tn+fp) if (tn+fp) else 0.0
+youden_test = sens + spec - 1
+print(f"Test ROC-AUC: {auc_test:.3f}")
+print(f"Test J (EXACT at {best_thres:.3f}) = {youden_test:.3f} | Sens={sens:.3f}, Spec={spec:.3f}")
 
 
 
-#plot for ROC curve
+fpr_test, tpr_test, _ = roc_curve(yte, yte_prob)
+
 plt.figure(figsize=(6,5))
-plt.plot(fpr, tpr, label=f"AUC={auc:.2f}")
+plt.plot(fpr_test, tpr_test, label=f"AUC={auc_test:.2f}")
 plt.plot([0,1],[0,1],"k--")
-plt.scatter(fpr[best_idx], tpr[best_idx], c="red", label=f"Cutoff={best_thr:.2f}")
+plt.scatter(1-spec, sens, c="red", label=f"Cutoff={best_thres:.2f}")
 plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
-plt.title("ROC Curve — Trimmed Model")
+plt.title("ROC Curve — Test Set")
 plt.legend()
 plt.tight_layout()
 plt.savefig(FIGS / "roc_curve.png", dpi=200, bbox_inches="tight")
 plt.show()
 
-#Probability distribution graph
+# Probability distribution graph
 plt.figure(figsize=(6,5))
-plt.hist(y_prob[yte==1], bins=12, density=True, alpha=0.5, label="Wins")
-plt.hist(y_prob[yte==0], bins=12, density=True, alpha=0.5, label="Losses")
-plt.axvline(best_thr, linestyle="--", color="red", label=f"Cutoff={best_thr:.2f}")
+plt.hist(yte_prob[yte==1], bins=12, density=True, alpha=0.5, label="Wins")
+plt.hist(yte_prob[yte==0], bins=12, density=True, alpha=0.5, label="Losses")
+plt.axvline(best_thres, linestyle="--", color="red", label=f"Cutoff={best_thres:.2f}")
 plt.xlabel("Predicted P(Win)")
 plt.ylabel("Density")
 plt.title("Predicted Win Probabilities — Test Set")
