@@ -16,3 +16,12 @@ To run the analysis, execute:
 python src/analysis.py 
 ```
 The final paper with findings is a PDF in the `paper` folder.
+
+**Final Results**
+- Validation AUC: 0.865
+- Validation Youden’s J: 0.708
+- Validation cutoff: 0.662 (with sensitivity ≥ 0.7 floor)
+- Test AUC: 0.812
+- Test sensitivity: 0.583
+- Test specificity: 0.875
+- Test Youden’s J: 0.458
